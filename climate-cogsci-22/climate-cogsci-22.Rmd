@@ -1,0 +1,699 @@
+---
+title: "Understanding intuitive theories of climate change"
+bibliography: references.bib
+csl: apa7.csl
+document-params: "10pt, letterpaper"
+
+author-information: > 
+    \author{{\large \bf Brittany Schotsch (bschotsc@asu.edu)} \\ School of Social and Behavioral Sciences \\ Arizona State University
+    \AND {\large \bf Derek Powell (dmpowell@asu.edu)} \\ School of Social and Behavioral Sciences \\ Arizona State University}
+
+abstract: >
+    There is a pressing need to inform the public and drive personal and political action to mitigate climate change. Recent theorizing suggests that people’s intuitive theories may be key levers for affecting attitude and behavior change [@weisman.markman2017]. We asked 400 participants to estimate the probability of different future events related to climate change. Our findings indicate that people hold coherent theories of climate change, that these theories were predictive of policy positions, and that they varied across individuals and across partisan groups. In particular, political independents and Republicans’s causal models underestimated the impacts of climate change. We also examined an educational intervention that explains a key mechanism of climate change [@ranney.clark2016]. Unfortunately, while the intervention increased mechanistic knowledge, it did not affect participants’ beliefs about climate outcomes. Nevertheless, the coherence of participants’ intuitive theories gives hope that other educational interventions could have meaningful and systematic effects on policy attitudes and political behaviors.
+
+    
+keywords: >
+    Intuitive theories; Behavioral interventions; Bayesian models; Causal reasoning
+    
+output: cogsci2016::cogsci_paper
+final-submission: \cogscifinalcopy
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=3, fig.height=3, fig.crop = F, 
+                      fig.pos = "tb", fig.path='figs/',
+                      echo=F, warning=F, cache=F, 
+                      message=F, sanitize = T)
+```
+
+
+```{r create-fig1}
+library(dagitty)
+drawdag <- rethinking::drawdag
+
+
+dag_theory <- dagitty('dag {
+bb="0,0,1,1"
+"Sea rise (C)" [pos="0.45,0.5"]
+"Extreme weather (E)" [pos="0.65,0.5"]
+"Acidification (F)" [pos="0.4,0.35"]
+"CO2 (A)" [pos="0.50,0.2"]
+"Warming (B)" [pos="0.55,0.35"]
+"Drought (D)" [pos="0.55,0.5"]
+"CO2 (A)" -> "Acidification (F)"
+"CO2 (A)" -> "Warming (B)"
+"Warming (B)" -> "Sea rise (C)"
+"Warming (B)" -> "Extreme weather (E)"
+"Warming (B)" -> "Drought (D)"
+}
+')
+
+# drawdag(dag_theory)
+```
+
+
+
+```{r load-and-setup, include=F}
+library(tidyverse)
+library(patchwork)
+library(apa)
+
+df1 <- read_csv("../data/climate-phase1.csv") %>% 
+  filter(check77==77) %>% 
+  gather(proposition, response, A:check77) %>% 
+  mutate(response = case_when(
+    response == 0 ~ .005,
+    response == 100 ~ .995,
+    TRUE ~ response/100
+  )) %>% 
+  spread(proposition, response) %>% 
+  select(-check77)
+
+# df1 <- df1 %>%
+#     mutate(
+#     A = A/2 + (1-notA)/2,
+#     B = B/2 + (1-notB)/2,
+#     C = C/2 + (1-notC)/2,
+#     D = D/2 + (1-notD)/2,
+#     E = E/2 + (1-notE)/2,
+#     `F` = `F`/2 + (1-notF)/2
+#   )
+
+noisy_or <- function(w0, w1, c=1){
+  w0 + c*w1 - w0*c*w1
+}
+
+noisy_and_not <- function(w0, w1, c=1){
+  w0 - w0*w1*c
+}
+
+calc_w1 <- function(HgnotD, HgD){
+  if (HgD >= HgnotD){
+    res <- 1/(1-HgnotD) * (HgD - HgnotD)
+  }
+  else if (HgD <= HgnotD) {
+    res <- (1-HgD/HgnotD)*-1
+  }
+  return(res)
+}
+
+```
+
+
+```{r phase1-res, include=F}
+
+# compare delta R2 w/ and w/out conditional probs
+
+cor(df1$A, df1$B)
+cor(df1$B, df1$C)
+cor(df1$B, df1$D)
+cor(df1$B, df1$E)
+cor(df1$A, df1$`F`)
+
+# compare coherence across political groups
+
+df1 %>% 
+  mutate(
+    calc_B = A*BgA + (1-A)*BgnotA,
+    calc_C = B*CgB + (1-B)*CgnotB,
+    calc_D = B*DgB + (1-B)*DgnotB,
+    calc_E = B*EgB + (1-B)*EgnotB,
+    calc_F = A*FgA + (1-A)*FgnotA,
+  ) %>% 
+  gather(item, resp, A,B,C,D,E,`F`,contains("calc_")) %>% 
+  mutate(
+    val_type = ifelse(grepl("calc_", item), "calc", "obs"),
+    item = gsub("calc_","",item)
+    ) %>% 
+  spread(val_type, resp) %>% 
+  drop_na(calc, obs) -> x
+
+x %>% 
+  group_by(item) %>% 
+  # filter(item %in% c("C","D","E")) %>%
+  mutate(resid = obs - calc) %>% 
+  group_by(Political_Party) %>% 
+  summarize(corr = round(cor(obs, calc),3), m_resid = mean(resid), N = n()) -> pol_corrs
+
+# opinion regressions and anova
+
+df1_opinion <- df1 %>% 
+  gather(question, opinion, Gov_Subsidies:Fuel_efficiency) %>% 
+  mutate(
+    opinion_num = recode(opinion,
+                         "Definitely yes" = 4,
+                         "Probably yes" = 3,
+                         "Probably no" = 2,
+                         "Definitely no" = 1
+                         
+    )
+  ) %>% 
+  mutate(
+    A_cause_B = map2_dbl(BgnotA, BgA, calc_w1),
+    B_cause_C = map2_dbl(CgnotB, CgB, calc_w1),
+    B_cause_D = map2_dbl(DgnotB, DgB, calc_w1),
+    B_cause_E = map2_dbl(EgnotB, EgB, calc_w1),
+    A_cause_F = map2_dbl(FgnotA, FgA, calc_w1),
+  ) %>% 
+  group_by(subj_id, A,B,BgA, BgnotA, C,D,E,`F`, A_cause_B, B_cause_C, B_cause_D, B_cause_E, A_cause_F , Political_Party, Political_Views) %>% 
+  summarize(
+    M1 = mean(opinion_num)
+  ) 
+
+summary(fit_politics <- lm(M1 ~ Political_Views + Political_Party, data = df1_opinion))
+summary(fit_all <- lm(M1 ~ A + B+C+D+E +  `F` + Political_Views + Political_Party, data = df1_opinion))
+reg_anova <- anova(fit_politics, fit_all, test="F")
+
+
+apa_anova <- function(res){
+  res <- round(res, 3)
+  
+  if(res$`Pr(>F)` < .001){
+    return(paste0("F(",res$Df,") = ", res$`F`, ", p < .001"))
+  } else {
+    return(paste0("F(",res$Df,") = ", res$`F`, ", p = ", `Pr(>F)`))
+  }
+}
+
+reg_rsquared <- function(fit, round=3){
+  round(summary(fit)$r.squared, round)
+}
+```
+
+
+```{r load-phase2, include=F}
+df2 <- read_csv("../data/climate-phase2.csv") %>% 
+  filter(check77==77) %>% 
+  gather(proposition, response, A:check77) %>% 
+  mutate(response = case_when(
+    response == 0 ~ .005,
+    response == 100 ~ .995,
+    TRUE ~ response/100
+  )) %>% 
+  spread(proposition, response) %>% 
+  select(-check77) %>% 
+  mutate(
+    A_same = A==notA & A!=50,
+    B_same = B==notB & B!=50,
+    C_same = C==notC & C!=50,
+    D_same = D==notD & D!=50,
+    E_same = E==notE & E!=50,
+    F_same = `F`==notF & notF!=50,
+    missedneg = A_same + B_same + C_same + D_same + E_same + F_same # remove Ps who seem to have missed negation, prereg this later
+  ) %>% filter(missedneg <= 1)
+
+df2 <- df2 %>% 
+    mutate(
+    A = A/2 + (1-notA)/2,
+    B = B/2 + (1-notB)/2,
+    C = C/2 + (1-notC)/2,
+    D = D/2 + (1-notD)/2,
+    E = E/2 + (1-notE)/2,
+    `F` = `F`/2 + (1-notF)/2
+  )
+
+df <- right_join(df1, df2, by = "subj_id", suffix = c("_1","_2")) %>% 
+  drop_na() %>% 
+  mutate(
+    self_understanding_num = case_when(
+      self_understanding == "Extremely well" ~ 5,
+      self_understanding == "Very well" ~ 4,
+      self_understanding == "Moderately well" ~ 3,
+      self_understanding == "Slightly well" ~ 2,
+      self_understanding == "Not well at all" ~ 1,
+    ),
+    Q1 = if_else(quiz1 == "visible; infrared", 1, 0),
+    Q2 = if_else(quiz2 == "Carbon dioxide,Methane", 1, 0),
+    Q3 = if_else(quiz3 == "allow visible light to pass through but absorb infrared light", 1, 0),
+    Q4 = if_else(quiz4, 1, 0),
+    Q5 = if_else(str_starts(quiz5, "absorbs infrared light"), 1, 0),
+    understanding_score = Q1 + Q2 + Q3 + Q4 + Q5,
+    B_er_1 = log(BgA_1/BgnotA_1),
+    B_er_2 = log(BgA_2/BgnotA_2)
+  ) 
+```
+
+```{r intervention-tests, include=F}
+
+# manipulation check
+ttest_quiz <- t_test(understanding_score ~ condition, data = df, var.equal=T)
+
+# self-understanding check
+ttest_selfunder <- t_test(self_understanding_num ~ condition, data = df, var.equal=T)
+  
+# intuitive theory tests / report t-tests
+df %>% 
+  mutate(
+    A_cause_B_1 = map2_dbl(BgnotA_1, BgA_1, calc_w1),
+    A_cause_B_2 = map2_dbl(BgnotA_2, BgA_2, calc_w1),
+    A_cause_B_diff = A_cause_B_2 - A_cause_B_1,
+    B_er_1 = log(BgA_1/BgnotA_1),
+    B_er_2 = log(BgA_2/BgnotA_2),
+    er_diff = B_er_2 - B_er_1,
+    B_diff = B_2 - B_1,
+  ) -> x
+  
+lm_bdiff <- lm(B_diff ~ condition, x )
+lm_erdiff <- lm(er_diff ~ condition, x)
+lm_causediff <- lm(A_cause_B_diff ~ condition, x)
+
+# political views test
+
+df1 %>% 
+  gather(question, opinion, Gov_Subsidies:Fuel_efficiency) %>% 
+  mutate(
+    opinion_num = recode(opinion,
+                         "Definitely yes" = 4,
+                         "Probably yes" = 3,
+                         "Probably no" = 2,
+                         "Definitely no" = 1
+                         
+    )
+  ) %>% 
+  group_by(subj_id, A,B,BgA, BgnotA, C,D,E,`F`, Political_Party) %>% 
+  summarize(
+    M1 = mean(opinion_num)
+  ) %>% 
+  right_join(
+    df2 %>% 
+  gather(question, opinion, Gov_Subsidies:Fuel_efficiency) %>% 
+  mutate(
+    opinion_num = recode(opinion,
+                         "Definitely yes" = 4,
+                         "Probably yes" = 3,
+                         "Probably no" = 2,
+                         "Definitely no" = 1
+                         
+    )
+  ) %>% 
+  group_by(subj_id, A,B,BgA, BgnotA, C,D,E,`F`, condition) %>% 
+  summarize(
+    M2 = mean(opinion_num)
+  ), by = "subj_id" 
+  ) %>% 
+  ungroup() %>% 
+  gather(phase, resp, M1, M2) %>%
+  mutate(resp = scale(resp)) %>%
+  spread(phase, resp) %>%
+  mutate(opinion_diff = M2 - M1) -> x
+
+ttest_opinion <- t_test(opinion_diff ~ condition, data = x, var.equal=T)
+
+reg_coef_report <- function(fit, coef_name, digits=3){
+  Df <- fit$df.residual
+  fit <- summary(fit)
+  coefs <- round(coefficients(fit), digits)
+  p_lessthan <- coefs[coef_name, 4] < .001
+  if (coefs[coef_name, 4] < .001){
+    out <- paste0("*t*(", Df, ") = ", coefs[coef_name, 3], ", *p* < .001")
+  } else {
+    out <- paste0("*t*(", Df, ") = ", coefs[coef_name, 3], ", *p* = ", coefs[coef_name, 4])
+  }
+  return(out)
+}
+```
+
+
+At 3:20pm on September 19, 2020, the numbers "7:103:15:40:07" appeared on a massive digital display in New York's Union Square. Immediately, the numbers began counting down. Created by climate activists Gan Golan and Andrew Boyd, this countdown clock presents the years, days, hours, minutes, and seconds left before humanity’s greenhouse gas emissions will inexorably lead average global temperatures to rise by more than 1.5 degrees C [@moynihan2020]. As outlined in the Paris Climate Agreement, levels of warming beyond 1.5 degrees C are expected to cause irreversible damage. Golan and Boyd's goal in displaying this clock was to galvanize climate action through a highly visible and visceral illustration of climate change's pressing dangers. But is this type of grand gesture the most effective communication approach? As the clock counts down, how can social and cognitive science inform efforts to mobilize political action to avert climate catastrophe?
+
+A growing body of evidence suggests that people’s “intuitive theories” are key determinants of attitudes and behavior, and therefore key levers for changing those attitudes and behaviors [for a review, see @weisman.markman2017]. Intuitive theories are mental models for how the world works that encode the causal and logical relationships within a domain [e.g. @carey2009; @gelman.legare2011; @keil1994; @gopnik.wellman1994; @gerstenberg.etal2021]. Analogous to scientific theories, they are thought to underlie humans' unique ability to reason accurately about rich and complex domains even from an early age [@gopnik.wellman1994].
+
+Weisman and Markman [-@weisman.markman2017] have proposed a method for leveraging intuitive theories to develop educational interventions that bring about behavioral change. To paraphrase, the approach consists of two main steps: First, research must assess people’s existing intuitive theories to identify where gaps or inaccuracies in those theories fail to motivate optimal decisions or behavior. Then, from these insights, educational interventions can be designed to fill in these gaps or correct these misconceptions to bring their intuitive theories closer to the ideal.
+
+Weisman and Markman [-@weisman.markman2017] review several case-studies where researchers successfully deployed this kind of approach to produce attitude and behavior change. In one example, Au and colleagues [-@au.etal2008] focused on teaching children the importance of washing their hands to minimize the spread of bacteria and viruses. Research indicates that children's understanding of viruses and bacteria is generally more mechanical than biological. In order to address this gap in children's intuitive theories, Au and colleagues [-@au.etal2008] developed an intervention to teach children that bacteria are living things that thrive in certain environments such as the human body, but they are killed by disinfectants and soaps. They emphasized the importance of washing hands, as people often touch their eyes, nose, and mouth giving bacteria and viruses the ability to enter the body. By enriching their intuitive theories, children showed increased understanding of when hand washing was needed to minimize risk of spreading germs, even in novel situations beyond the direct teachings of the intervention. 
+
+In a larger project, we are working to apply Weisman and Markman’s [-@weisman.markman2017] approach to motivate action to mitigate climate change. Our first step is to understand the conceptual structure and workings of people’s intuitive theories of climate change. 
+
+A recent poll by researchers at Yale and George Mason Universities [@leiserowitz.etal2021] sheds some light on Americans’ thinking around climate change. About three-quarters of Americans accept that climate change is happening, and 70% are at least “somewhat worried” about it. However, there are also divisions: only about half of Americans think that they will personally be harmed by climate change and only 60% understand that it is mostly human-caused. Americans’ intuitive theories are perhaps most united in being relatively impoverished: most Americans appear to lack any meaningful understanding of the greenhouse effect or the general causes of climate change. In an open-ended survey of 270 Americans that asked them to explain the causes of climate change, only 3% mentioned the greenhouse effect [@ranney.clark2016]. 
+
+To be effective, intuitive theories must encode relevant causal and logical relationships that support accurate prediction and effective action to bring about desired outcomes. When people’s theories are wanting, they can fail to support confident inferences or motivate decisive actions [@weisman.markman2017]. It is clear there is room for many Americans’ intuitive theories of climate change to be improved.
+
+In addition, further understanding of differences across individuals and groups could help us understand the drivers of skepticism and inform the development of interventions tailored to different groups. Politics clearly play a crucial role. Though long-politicized, recently there has been an international rise in skepticism about the realities of climate change among the political right [@merkley.stecula2020], and political affiliations strongly influences beliefs in climate change in the U.S. [@hornsey.etal2016]. 
+
+With sufficient understanding of existing intuitive theories, interventions might be developed to encourage climate action. In this spirit, Ranney and Clark [-@ranney.clark2016] have developed an educational intervention focused on enhancing participants' understanding of the physical and chemical mechanisms of climate change that may offer a useful starting point. The intervention explains the greenhouse effect by describing the causal connection between the release of carbon dioxide and the Earth’s increasing global temperature. As expected, the intervention had a significant effect on participants' mechanistic understanding of climate change. And, as hoped, they found the intervention also increased participants’ acceptance of anthropogenic climate change.
+
+
+## Computational models of intuitive theories
+
+The first and primary goal of this work is to develop a richer and more formal understanding of the lay theory of climate change. Recent work has sought to formally model intuitive theories in a number of domains with a variety of different computational approaches [e.g. @battaglia.etal2013; @gerstenberg.etal2021; @gopnik.etal2004; @powell.etal2018]. Following these trends, we seek to build a computational model of the intuitive theories of climate change that should provide the opportunity for sharper tests of psychological theory and help prioritize the development of interventions [@weisman.markman2017; @powell.etal2018].
+
+```{r fig1, fig.env = "figure", fig.pos = "H", fig.align='center', fig.width=3.25, fig.height=2, set.cap.width=T, num.cols.cap=1, fig.cap = "A Directed Acyclic Graph depicting a (partial) intuitive theory of climate change."}
+drawdag(dag_theory, cex=.7)
+```
+
+As with scientific theories, causal relationships are key components of intuitive theories. Understanding how causes bring about effects supports intervening on the world to bring about desired outcomes, and understanding the causes of effects supports diagnostic inferences that can provide new information. Structural Causal Models [@pearl2003] therefore offer a useful means to formally represent intuitive theories [@gopnik.etal2004; @griffiths.tenenbaum2005]. These models consist of a causal diagram called a “directed acyclic graph” (DAG) that specify the causal relations (represented as edges in a graph) among different entities (represented as nodes). 
+
+We sought to apply this class of formal models to describe people’s intuitive theories of climate change. The DAG in Figure 1 presents a partial picture of one potential intuitive theory of climate change. Atmospheric CO2 levels cause warming, which in turn causes rising sea levels, droughts and wildfires, and extreme weather events. Atmospheric CO2 also directly leads to acidification of the oceans and impacts on shellfish and other marine life. 
+
+Combining a DAG with a joint probability distribution over its nodes (e.g. $P(A,B,C,D,E,F)$) yields a Bayesian Network, a graphical model that permits quantitative inferences concerning the entities in the graph. Given a specific graphical structure, a joint probability distribution can be decomposed into a set of conditional probability distributions (CPDs), one corresponding to each node. 
+
+Causal relationships within such structural causal models are sometimes summarized in terms of their causal strengths [@cheng1997; @holyoak.cheng2011; @lu.etal2008; @griffiths.tenenbaum2005]. Under this formulation, causes can be generative or preventative, and the strength of a cause, $w_c$, influences the probability of an effect occurring relative to the probability of the effect occurring in its absence. This probability is often also expressed as a causal strength, $w_b$, representing the strength of all combined background causes. These causal strengths can be inferred from participants’ conditional probability judgments, by assuming that the CPT for the effect follows a noisy-logical distribution [@cheng1997].
+
+\begin{align*}
+w_b &= P(e|\neg c) \\
+\\
+w_{c} &=
+    \begin{cases}
+      \frac{P(e|c) - P(e|\neg c)}{1-P(e|\neg c)}& P(e|c) > P(e|\neg c) \\
+      1 - \frac{P(e|c)}{P(e|\neg c)} & P(e|c) < P(e|\neg c) \\
+      0 & P(e|c) = P(e|\neg c)
+    \end{cases}
+\end{align*}
+  
+
+Here, we explored how this formal approach could be applied to understand intuitive theories of climate change. We began by assuming that the basic structure of people’s intuitive theory of climate change is shared, and can be (at least partially) represented by the DAG in Figure 1. We then asked participants to make a set of probability judgments that would allow us to fill in the CPDs of this model for each person individually. 
+
+We were first interested in whether people’s intuitive theories could be considered coherent: would their probability judgments fit together? Secondly, we were interested in how intuitive theories might differ across individuals and groups. And finally, we were interested in whether specific aspects of this theory might change following an educational intervention. 
+
+
+# Study
+
+This study was preregistered (https://osf.io/bvw25) and all data and analysis scripts are available at https://osf.io/vu5zq/. 
+
+## Methods
+
+### Participants
+
+A total of 400 U.S.-based participants were recruited for this study through the CloudResearch survey recruitment platform, which provides access to a group of prescreened workers from Amazon’s mechanical Turk work distribution website. All participants stated that they were $\geq$ 18 years old, English speaking, and residing in the United States. Participants were invited to two phases of the study. In each phase, they were asked to complete an approximately 15-minute Qualtrics survey. They were compensated $2.25 for their participation in each phase of the study. Participants who failed the attention check (_n_ = `r 400- nrow(df1)`) were excluded from further analysis. All participants passing attention checks were invited to participate again in Phase 2. Of these, `r nrow(df2)` returned and passed the attention check in Phase 2 to be included in the Phase 2 analyses.
+
+### Materials and procedures 
+
+This study was conducted in two phases, each administered via an online Qualtrics survey. Participants were first presented with 22 possible future events and asked to estimate the probability of that event occurring. They made their responses using a free response box to input the percentage chance from 0% to 100%. An attention check question was presented at random among the events that asked participants to enter 77% to pass the check. 
+
+Participants made probability judgments focused on six basic events relevant to climate change, all prefixed with the timeline, "By the year 2040, ...":
+
+(A) World greenhouse gas emissions have been reduced to near net zero
+
+(B) The average global temperature has increased by more than 1.5 degrees celsius
+
+(C) Sea levels will rise high enough to require major infrastructure changes in many coastal U.S. cities
+
+(D) Hurricanes and other tropical storms have become much more frequent in the U.S.
+
+(E) Wildfires, droughts, and extreme heat waves have become much more frequent in the U.S.
+
+(F) Ocean acidification will have created a severe shellfish shortage.
+
+Participants made judgments about these events, their negations, and conditional probabilities relating them to one another according to the DAG in Figure 1.
+
+Participants were then asked 8 questions regarding their attitudes toward potential U.S. federal climate change policies. Participants were given a four point scale to rate their likelihood to vote for the policies, with possible responses of “_definitely yes”, “probably yes”, “probably no” _and_ “definitely no”_. These federal climate change policy questions were adapted and updated from a survey by Schwom and colleagues [-@shwom.etal2010].
+
+
+```{r fig2, fig.env = "figure*", fig.pos = "!h", fig.width=7, fig.height=2, fig.align = "center", set.cap.width=T, num.cols.cap=2, fig.cap = "Left, histograms showing inferred distributions of causal strengths for causal relationships encoded in the intuitive theory. For plotting purposes, generative strengths (purple) are coded positive and preventive strengths (orange) are coded negative. Right, predicted and observed probabilities of effect nodes given participant's simple probability judgments of their causes (parents) and conditional probability judgments."}
+
+df1 %>% 
+  mutate(
+    calc_B = A*BgA + (1-A)*BgnotA,
+    calc_C = B*CgB + (1-B)*CgnotB,
+    calc_D = B*DgB + (1-B)*DgnotB,
+    calc_E = B*EgB + (1-B)*EgnotB,
+    calc_F = A*FgA + (1-A)*FgnotA,
+  ) %>% 
+  gather(item, resp, A,B,C,D,E,`F`,contains("calc_")) %>% 
+  mutate(
+    val_type = ifelse(grepl("calc_", item), "calc", "obs"),
+    item = gsub("calc_","",item)
+    ) %>% 
+  spread(val_type, resp) %>% 
+  drop_na(calc, obs) -> x
+
+x %>% 
+  group_by(item) %>% 
+  # filter(item %in% c("C","D","E")) %>%
+  mutate(resid = obs - calc) %>% 
+  summarize(corr = cor(obs, calc), m_resid = mean(resid), N = n()) -> corrs
+
+
+df1 %>% 
+  mutate(
+    B_logER = log(BgA/BgnotA),
+    C_logER = log(CgB/CgnotB),
+    D_logER = log(DgB/DgnotB),
+    E_logER = log(EgB/EgnotB),
+    F_logER = log(FgA/FgnotA),
+    A_cause_B = map2_dbl(BgnotA, BgA, calc_w1),
+    B_cause_C = map2_dbl(CgnotB, CgB, calc_w1),
+    B_cause_D = map2_dbl(DgnotB, DgB, calc_w1),
+    B_cause_E = map2_dbl(EgnotB, EgB, calc_w1),
+    A_cause_F = map2_dbl(FgnotA, FgA, calc_w1),
+  ) %>% 
+  gather(er, val, contains("_cause_")) %>% 
+  mutate(
+    generative = if_else(val>=0,"Gen.","Prev."),
+    er = gsub("_"," ", er)
+    ) %>% 
+  # mutate(val = abs(val)) %>% 
+  ggplot(aes(x=val, fill=generative)) +
+  geom_histogram() +
+  scale_fill_manual(values = c("#A41881", "#FFAB6C")) +
+  # theme(aspect.ratio=1) +
+  theme_bw(base_size=9) +
+  theme(
+    panel.grid=element_blank(), 
+    aspect.ratio=1,
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+    legend.position="none",
+    # legend.direction="vertical"
+    ) +
+  geom_vline(xintercept = 0) +
+  facet_grid(~er) +
+  labs(x="Causal strength", y = "Count", fill="Type") +
+
+  
+x %>% 
+  ggplot(aes(x=calc, y = obs)) +
+  geom_point(alpha=.33, size=.75) +
+  theme(aspect.ratio=1) +
+  geom_text(data=corrs, mapping=aes(x=.6, y=.05, label=paste("r = ", round(corr,2))), size=2.5, color="#A41881") +
+  facet_wrap(~item, nrow=1) +
+  theme_bw(base_size=9) +
+  theme(
+    panel.grid=element_blank(), 
+    aspect.ratio=1,
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(y="Observed", x= "Predicted") +
+  plot_layout(ncol=2)
+```
+
+Finally, participants were asked to provide some basic demographic information.
+
+The next day, participants were invited back for the second phase of this study where they were randomly assigned to the “intervention” or “control” conditions. Participants in the intervention condition were shown an informative 3-minute video describing the mechanics of the greenhouse effect [@lamprey.ranney2013; @ranney.clark2016]. The video explains that greenhouse gasses like CO2 allow visible light to reach the Earth's surface and then trap the infrared light that reflects off the earth, thereby storing that energy in the atmosphere and warming the planet. We hypothesized that this intervention would directly affect participants' understanding of the conditional probability of global warming given that CO2 emissions are or are not reduced to near net zero. In turn, we predicted this would then affect other downstream beliefs about warming and its effects.
+
+After the intervention, all participants were asked to again judge the probability of events from Phase 1 and to responded to the same 8 potential federal climate change policy questions. Finally, all participants were given a short quiz on the mechanisms of climate change to test their understanding of the intervention.
+
+## Results
+
+The foremost goal of this study was to gain insight into people’s intuitive theories of climate change from their probability judgments. We hypothesized that people’s intuitive theories generally contain the causal structure depicted in Figure 1. We asked people to report the simple and conditional probabilities that would allow us to capture the probability distribution connecting this set of relevant beliefs.
+
+```{r fig3, fig.env = "figure*", fig.pos = "h", fig.width=4.5, fig.height=4.5, fig.align = "center", set.cap.width=T, num.cols.cap=2, fig.cap = "Boxplots illustrating the distribution of simple probability judgments (top), conditional probability judgments (middle), and causal strenghts (bottom) among Democrat, Independent, and Republican-identifying participants."}
+
+plt1 <- df1 %>%
+  filter(Political_Party != "Other", Political_Party != "Prefer not to say") %>% 
+  mutate(Political_Party = substr(Political_Party, 1, 3)) %>% 
+  mutate(
+    B_logER = log(BgA/BgnotA),
+    C_logER = log(CgB/CgnotB),
+    D_logER = log(DgB/DgnotB),
+    E_logER = log(EgB/EgnotB),
+    F_logER = log(FgA/FgnotA)
+  ) %>% 
+  gather(item, resp, A,B,C,D,E,`F`) %>% # BgnotA, BgA, CgB, CgnotB, DgB, DgnotB, EgB, EgnotB, FgA, FgnotA) %>% 
+  ggplot(aes(x=Political_Party, fill=Political_Party, y = resp)) +
+  scale_fill_manual(values=c("#0067B1","#FFD9C4","#E43969")) +
+  geom_boxplot() +
+  facet_wrap(~item, ncol=6) +
+  theme_bw(base_size=9) +
+  theme(legend.position="none",panel.grid=element_blank()) +
+  labs(title = "Simple probability judgments", y = "Est. probability")
+
+  
+plt2 <- df1 %>%
+  filter(Political_Party != "Other", Political_Party != "Prefer not to say") %>% 
+  mutate(Political_Party = substr(Political_Party, 1, 3)) %>% 
+  gather(item, resp,BgnotA, BgA, CgB, CgnotB, DgB, DgnotB, EgB, EgnotB, FgA, FgnotA) %>% 
+  mutate(
+    item = gsub("g","|",item)
+    ) %>% 
+  ggplot(aes(x=Political_Party, fill=Political_Party, y = resp)) +
+  scale_fill_manual(values=c("#0067B1","#FFD9C4","#E43969")) +
+  geom_boxplot(width=.5) +
+  facet_wrap(~item, ncol=5,dir = "v") +
+  theme_bw(base_size=9) +
+  theme(legend.position="none", panel.grid=element_blank()) +
+  labs(title = "Conditional probability judgments", y = "Est. probability") 
+
+
+plt3 <- df1 %>% 
+  filter(Political_Party != "Other", Political_Party != "Prefer not to say") %>% 
+    mutate(Political_Party = substr(Political_Party, 1, 3)) %>% 
+  # filter(BgnotA >= BgA, FgnotA >= FgA, CgB >= CgnotB, DgB >= DgnotB, EgB >= EgnotB) %>% 
+  mutate(
+    A_cause_B = map2_dbl(BgnotA, BgA, calc_w1),
+    B_cause_C = map2_dbl(CgnotB, CgB, calc_w1),
+    B_cause_D = map2_dbl(DgnotB, DgB, calc_w1),
+    B_cause_E = map2_dbl(EgnotB, EgB, calc_w1),
+    A_cause_F = map2_dbl(FgnotA, FgA, calc_w1),
+  ) %>%
+  gather(item, resp, contains("_cause_")) %>% 
+  filter(item %in% c("A_cause_B", "A_cause_F") & resp <= 0 | item %in% c("B_cause_C", "B_cause_D", "B_cause_E") & resp >= 0) %>% 
+  mutate(resp = abs(resp)) %>% 
+  mutate(item = gsub("_"," ", item)) %>% 
+  ggplot(aes(x=Political_Party, fill=Political_Party, y = resp)) +
+  scale_fill_manual(values=c("#0067B1","#FFD9C4","#E43969")) +
+  geom_boxplot(width=.5) +
+  theme_bw(base_size=9) +
+  theme(legend.position="none", panel.grid=element_blank()) +
+  labs(title = "Implied causal strengths", y = "Est. probability") +
+  facet_wrap(~item, nrow=1)
+
+(
+  plt1 + 
+   theme(axis.title.x=element_blank()) +
+   plt2 + 
+    theme(axis.title.x=element_blank()) +
+   plt3 +
+    labs(x="Political Party")
+ ) +
+  # theme(aspect.ratio=.75) +
+  plot_layout(nrow=3, heights=c(1,2,1))
+```
+
+
+Figure 2 (left) shows the inferred judgments of causal strength between each node and its descendents, computed from participants' conditional probability judgments. As shown in the figure, a clear and large majority understood that reducing greenhouse gas emissions (A) would have a preventative effect on warming (B) and ocean acidification (F; i.e. they judged $P(B|A) < P(B|\neg A)$ and $P(F|A) < P(F|\neg A)$). And likewise a clear and large majority understood that warming (B) will generate the negative effects C, D, and E. 
+
+First we sought to test a key feature of probability distributions and intuitive theories: that they are _coherent_. Empirically, this means that different simple and conditional probability judgments should comport well with one another. For instance, we should be able to use participants’ judgments of $P(A)$ and of $P(B|A)$ to predict their judgments of $P(B)$. 
+
+The right panel shows the predicted and observed values for each of the child nodes based on their parents and the relevant conditional probability judgments. Overall, these correlations are quite strong, suggesting that participants’ probability estimates are largely coherent.[^1] Importantly, people's conditional probability estimates convey crucial information about their understanding of the relationships among variables: predictions based only on the perceived probability of the parent event were much poorer than predictions that also incorporated conditional probability estimates ($\Delta R^2$ ranging from .29 to .53).
+
+[^1]: It is worth noting that participants did appear to have some trouble coherently judging the probability of negations. For this reason, we focused our analyses on participants’ simple probability judgments for the non-negated statements and ignored the negations. Another approach is to estimate the “true” probability based on each simple statement and its negation. This method produces similar but slightly weaker correlations.
+
+### Variation in intuitive theories
+
+As depicted in Figures 2 and 3, there is substantial variability in the probabilities that participants assign to different future climate events. Given the politicized nature of climate change in the U.S., we suspected that intuitive theories might vary with participants’ political orientations.
+
+Figure 3 shows the distributions of probability judgments for each event from participants identifying as Democrats (210), Republicans (59), and Independents (92; i.e. those not identifying with any major political party). First, there is broad agreement across U.S. political groups about the political chances of reducing emissions to net zero by 2040 (A), with all groups assigning relatively low probabilities. But relative to Democrats, Independents and especially Republicans underestimate the probability of all of the climate impacts that will result from sustained CO2 emissions (B-F). 
+
+It appears that Independents and Republicans are not just optimistic relative to Democrats, but instead hold somewhat different mental models. This can be seen in the different causal strengths implied by their conditional probability estimates, shown in Figure 3. Republicans and Independents do not simply underestimate the likelihood of negative events overall. Although they appreciate the causal importance of cutting CO2 emissions to curb warming, they underestimate the power of warming to cause rising oceans, droughts, and extreme weather. In particular, substantial proportions of Republicans assign extremely weak causal strengths to global warming for causing negative consequences (i.e. over 25% of Republicans assign causal strengths &lt; .10 for at least one of $B \rightarrow C$, $B \rightarrow D$, $B \rightarrow E$).
+
+Despite the disconnect between some Republican participants’ intuitive theories and scientific consensus around climate change, their intuitive theories appear just as internally coherent as Democrats’ and Independents’. That is, correlations among implied and observed event probabilities (as calculated in Figure 2) were similarly strong among members of each party (Dem. $r =$ `r pol_corrs[1,2]`; Ind. $r =$ `r pol_corrs[2,2]`; Rep. $r =$ `r pol_corrs[5,2]`).
+
+
+### Intuitive theories and policy positions
+
+We averaged participants’ endorsements of the 8 policy questions to estimate their overall attitude toward environmental policies. Participants’ political affiliations predicted their policy attitudes: a simple linear regression of political leanings and party membership (both as categorical variables) accounted for `r reg_rsquared(fit_politics)*100`% of the variance in participant’s policy attitudes.
+
+As shown above, political affiliations are associated with features of participants’ intuitive theories. However, participant’s intuitive theories were also predictive of their policy attitudes over-and-above their political leanings: Adding participants’ simple probability judgments for events A-F increased the variance accounted for by the model to `r reg_rsquared(fit_all)*100`% ($\Delta R^2$ = `r (reg_rsquared(fit_all) - reg_rsquared(fit_politics))*100`%, `r apa_anova(reg_anova[2,])`). Although education addressing people’s intuitive theories may not be a panacea for motivating political action addressing climate change, these findings indicate it should be an important lever.
+
+### Intervention results
+
+Phase 2 of the study re-recruited participants and presented some with a brief educational intervention video describing the greenhouse effect as a major cause of global warming. Ranney and Clark (2016) report that this intervention improves understanding and increases acceptance of anthropogenic climate change. 
+
+We hypothesized that this intervention would strenghten understanding of the causal relationship between greenhouse gas emmisions and global warming. Specifically, we predicted that it would affect judgments of the probability of warming given a failure to reduce emissions, and consequently increase the perceived probability of warming and its downstream consequences. 
+
+Unfortunately, the intervention had no effect on people's intuitive theories as measured by their probability judgments. Participants did not anticipate that warming was more likely following the intervention, nor did their conditional probability judgments reflect any change in their understanding of the relationships between CO2 emissions and climate change (measured by effect on warming beliefs: `r reg_coef_report(lm_bdiff, "conditionintervention")`, measured by evidence ratio: `r reg_coef_report(lm_erdiff, "conditionintervention")`, measured by causal strength: `r reg_coef_report(lm_causediff, "conditionintervention")`).
+
+As a manipulation check, we presented participants with a short 5-question quiz about climate change, focused on the topics covered in the intervention. Participants in the intervention condition performed significantly better than those in the control condition (`r apa(ttest_quiz)`), suggesting that the null effect is not due to a lack of attention or comprehension.
+
+
+```{r fig4, fig.env = "figure", fig.pos = "ht", fig.align='center', fig.width=3.5, fig.height=2, set.cap.width=T, num.cols.cap=1, fig.cap = "Differences between pretest and posttest policy attitudes. Differences are shown overall (left) and broken down by political party (right). Error bars indicate standard errors."}
+df1 %>% 
+  gather(question, opinion, Gov_Subsidies:Fuel_efficiency) %>% 
+  mutate(
+    opinion_num = recode(opinion,
+                         "Definitely yes" = 4,
+                         "Probably yes" = 3,
+                         "Probably no" = 2,
+                         "Definitely no" = 1
+                         
+    )
+  ) %>% 
+  group_by(subj_id, A,B,BgA, BgnotA, C,D,E,`F`, Political_Party) %>% 
+  summarize(
+    M1 = mean(opinion_num)
+  ) %>% 
+  right_join(
+    df2 %>% 
+  gather(question, opinion, Gov_Subsidies:Fuel_efficiency) %>% 
+  mutate(
+    opinion_num = recode(opinion,
+                         "Definitely yes" = 4,
+                         "Probably yes" = 3,
+                         "Probably no" = 2,
+                         "Definitely no" = 1
+                         
+    )
+  ) %>% 
+  group_by(subj_id, A,B,BgA, BgnotA, C,D,E,`F`, condition) %>% 
+  summarize(
+    M2 = mean(opinion_num)
+  ), by = "subj_id" 
+  ) %>% 
+  ungroup() %>% 
+  gather(phase, resp, M1, M2) %>%
+  mutate(resp = scale(resp)) %>%
+  spread(phase, resp) %>%
+  mutate(opinion_diff = M2 - M1) -> x
+
+x %>% 
+  # filter(Political_Party %in% c("Democratic Party", "Republican Party", "Independent")) %>% 
+  group_by(condition) %>%
+  drop_na(opinion_diff) %>% 
+  summarize(M = mean(opinion_diff), se = sd(opinion_diff)/sqrt(n())) %>% 
+  # ggplot(aes(x= condition, y=opinion_diff)) +
+  # geom_boxplot()
+  ggplot(aes(x = "Overall", color = condition, y = M, ymin= M-se, ymax=M+se)) +
+  geom_pointrange(position=position_dodge(width=.5)) +
+  scale_color_manual(values=c("#FFAB6C", "#A41881")) +
+  labs(y = "Mean difference") +
+  theme_bw(base_size=9) +
+  theme(panel.grid=element_blank()) +
+  theme(legend.position="none", axis.title.x=element_blank()) +
+
+x %>% 
+  filter(Political_Party %in% c("Democratic Party", "Republican Party", "Independent")) %>% 
+  mutate(Political_Party = substr(Political_Party, 1, 3)) %>% 
+  group_by(condition, Political_Party) %>% 
+  drop_na(M1) %>%
+  summarize(M = mean(opinion_diff), se = sd(opinion_diff)/sqrt(n())) %>% 
+  # ggplot(aes(x= condition, y=opinion_diff)) +
+  # geom_boxplot()
+  ggplot(aes(x=Political_Party, color = condition, y = M, ymin= M-se, ymax=M+se)) +
+  geom_pointrange(position=position_dodge(width=.5)) +
+  scale_color_manual(values=c("#FFAB6C", "#A41881")) +
+  labs(x = "Political Party", color = "Condition", y = "Mean difference") +
+  theme_bw(base_size=9) +
+  theme(panel.grid=element_blank(), axis.title.y=element_blank()) +
+  plot_layout(widths=c(1,3))
+ # scale_color_manual(values=c("blue","grey80","red"))
+```
+
+
+The intervention may have had some positive impact on participants' policy attitudes: Overall, there was a more positive change in attitudes in the intervention group than in the control group, `r substr(apa(ttest_opinion), 1, 28)`. As can be seen in Figure 4, the changes were quite small, but they are broadly consistent with effects observed with similar brief interventions [@rode.etal2021]. However, the changes appear to be driven largely by participants identifying as Democrats, although it is hard to rule out effects among other partisans in a sample of this size (tests of interactions across partisan groups were non-significant). It is unclear how exactly the intervention has influenced these attitudes, but it does not appear to have occurred through a meaningful shift in participants' intuitive theories.
+
+
+# Discussion
+
+The results of this study first suggest that people have coherent intuitive theories of climate change and that they think about the causes and effects of climate change in systematic ways. Individual participants' simple and conditional probability judgments were coherent and strongly predictive of one another as prescribed by probability theory. The majority of participants indicated understanding of the connections between reducing greenhouse gas emissions and slowing global temperature increase, and between global temperature increase and harmful outcomes like droughts, extreme weather, and rising sea levels. However, there was substantial variation across individuals and a general tendency to underestimate the probability of outcomes compared with the scientific consensus. In particular, political conservatives and independents in the U.S. reliably and in some cases severely underestimate the connection between global warming and its effects.
+
+Second, participants’ probability judgments predicted attitudes toward government policies aimed at curbing climate change. Importantly, participants’ intuitive theories were predictive of policy attitudes over and above their political affiliations. These findings are consistent with the important role of intuitive theories for shaping attitudes and behaviors [@weisman.markman2017].
+
+Finally and unfortunately, an intervention explaining the physical mechanisms of the greenhouse effect did not affect participant’s understanding of the causal connection between CO2 emissions and warming, having no effect on their conditional probability judgments. The failure of the intervention to impact intuitive theories may highlight a difference between simple knowledge of facts and deeper understanding thought to be embodied in intuitive theories. Although participants who saw the intervention learned the facts, they appear to have failed to internalize that knowledge as part of their intuitive theories.
+
+There are other important limitations to the present work that bear further investigation. First, more could be done to assess whether people's beliefs are truly driven by a coherent intuitive theory. For instance, additional conditional probability judgments could more fully test whether reports are consistent with the hypothesized structure (e.g. testing not only C|B and D|B, but also B|C, B|D, C|D and D|C) [e.g. @fernbach.etal2010; @fernbach.etal2011]. Future studies should also explore how other issues fit into intuitive theories of climate change, such as beliefs about whether scientific innovation will mitigating negative climate effects, whether people believe they will be personally impacted by climate change, and beliefs about other putative causes of global warming. Finally, recruitment of representative samples would help to to more accurately characterize differences among U.S. political groups.
+
+Our investigation has highlighted several other important gaps in American’s intuitive theories of climate change that might be addressed through educational interventions. First, there is a general underestimation of the probability that global warming will surpass 1.5 degrees C. Climate scientists overwhelmingly predict—with an extreme degree of certainty—that without significant emission reductions the planet will warm past 1.5 degrees C. Yet the overall median estimated probability among our participants was only a `r median(df1$B)*100`% chance. Similarly, more representative polling indicates that only about one in four Americans understand that over 90% of climate scientists agree on the anthropogenic causes of climate change [@leiserowitz.etal2021]. Together these findings suggest that interventions emphasizing the strength of scientific consensus [@cook.lewandowsky2016; @priniski.horne2019] are likely to be crucial. This intervention is not simply an appeal to authority, but also appears to target an important gap in people’s intuitive theories of climate change.
+
+However, other gaps require further attention. Even if people were persuaded of the near-certainty of warming without action, our findings suggest they would still be somewhat divided over the implications. There was substantial variability in participant’s perceptions of the causal connections between warming and negative outcomes, especially across partisan groups. So, educational interventions that address these points will likely be necessary to spur action and to bridge partisan divides.
+
+Our findings have helped enrich our scientific understanding of people’s intuitive theory of climate change. Despite their many inaccuracies, the coherence of people’s intuitive theories gives a glimmer of hope: it suggests people are able to think about this domain in systematic ways and that they might be appropriately responsive to the right sorts of reasons.
+
+# References 
+
+```{r}
+# References will be generated automatically by Pandoc and included here.
+# The following code is some latex to format the bibliography. Do not remove it.
+```
+
+\setlength{\parindent}{-0.1in} 
+\setlength{\leftskip}{0.125in}
+\noindent
